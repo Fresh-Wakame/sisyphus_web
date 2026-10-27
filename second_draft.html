@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Sisyphus — The Endless Summit</title>
+<style>
+  :root { color-scheme: dark; --bg:#071b38; --fg:#f4f5f8; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: var(--bg); color: var(--fg); font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
+  canvas { display: block; width: 100vw; height: 100vh; touch-action: none; }
+  .hud { position: fixed; inset: 0; pointer-events: none; color: var(--fg); }
+  .title { position: absolute; top: clamp(18px, 4vh, 42px); left: clamp(18px, 4vw, 52px); letter-spacing: .14em; font-size: clamp(11px, 1.2vw, 14px); opacity: .82; }
+  .title strong { display:block; font-size: clamp(21px, 3vw, 34px); font-weight: 500; letter-spacing: .03em; margin-top: 8px; }
+  .status { position:absolute; top: clamp(22px, 4vh, 42px); right: clamp(18px, 4vw, 52px); text-align:right; font-size:12px; letter-spacing:.12em; opacity:.85; }
+  .status b { display:block; font-size: clamp(22px, 2.7vw, 30px); letter-spacing:0; font-weight:500; margin-top:5px; }
+  .bottom { position:absolute; bottom: clamp(22px, 4vh, 42px); left:50%; transform:translateX(-50%); width:min(600px, 88vw); text-align:center; }
+  .hint { font-size:12px; letter-spacing:.06em; opacity:.78; margin-bottom:12px; }
+  .meter { height:3px; background:rgba(255,255,255,.18); overflow:hidden; }
+  .fill { height:100%; width:0%; background:#f5f2e9; }
+  .message { margin-top:13px; min-height:20px; font-size:12px; letter-spacing:.12em; opacity:.68; }
+  .start { pointer-events:auto; position:absolute; left:50%; top:50%; transform:translate(-50%,-50%); border:1px solid rgba(255,255,255,.55); background:rgba(5,12,28,.22); color:#fff; padding:13px 25px; font:inherit; letter-spacing:.12em; cursor:pointer; backdrop-filter:blur(8px); transition:background .2s; }
+  .start:hover { background:rgba(255,255,255,.13); }
+  .start.hidden { display:none; }
+  .touch { pointer-events:auto; touch-action:none; position:absolute; bottom:24px; right:22px; border:1px solid rgba(255,255,255,.45); background:rgba(5,12,28,.2); color:#fff; border-radius:50%; width:76px; height:76px; display:none; font-size:12px; letter-spacing:.08em; }
+  @media (pointer:coarse) { .touch { display:block; } .hint { padding-right:80px; } }
+  @media (max-width:600px) { .title { top:18px; } .status { top:20px; } .bottom { bottom:18px; } }
+</style>
+</head>
+<body>
+<canvas id="scene" aria-label="A game where the silhouette of a grown man pushes a huge round boulder up a mountain"></canvas>
+<div class="hud">
+  <div class="title">AN ENDLESS TASK<strong>Sisyphus</strong></div>
+  <div class="status">SUMMITS REACHED<b id="count">0</b></div>
+  <div class="bottom">
+    <div class="hint" id="hint">Hold SPACE / ↑ to push the boulder up — let go and it rolls back down</div>
+    <div class="meter"><div class="fill" id="fill"></div></div>
+    <div class="message" id="message">O my soul, do not aspire to immortal life, but exhaust the limits of the possible.</div>
+  </div>
+  <button class="start" id="start">Begin the journey</button>
+  <button class="touch" id="touch">PUSH</button>
+</div>
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  const canvas=$('scene'), ctx=canvas.getContext('2d');
+  const countEl=$('count'), fillEl=$('fill'), msgEl=$('message'), hintEl=$('hint'), startBtn=$('start'), touchBtn=$('touch');
+  const clamp=(v,a,b)=>Math.max(a,Math.min(b,v)), lerp=(a,b,t)=>a+(b-a)*t, sg=t=>1/(1+Math.exp(-t));
+  const T=Math.tan(24*Math.PI/180), TB=.85, INK='#05070d', STEP=4, X0=-2600;
+  let W,H,dpr,h,r,Sx,Xtop,Xp,Xb,ax,ay,tab,topH;
+
+  // ---------- terrain: smooth slope up, short crest, steep far side ----------
+  function dhf(x){const w=.5*h;return T*sg(x/w)-T*sg((x-Sx)/w)-TB*sg((x-Xp)/w)+TB*sg((x-Xb)/w);}
+  function build(){
+    const n=Math.ceil((Xb+2200-X0)/STEP); tab=new Float32Array(n+1);
+    for(let i=1;i<=n;i++){const x=X0+i*STEP;tab[i]=tab[i-1]+(dhf(x-STEP)+dhf(x))/2*STEP;}
+  }
+  function Hh(x){const f=clamp((x-X0)/STEP,0,tab.length-1.001),i=Math.floor(f);return lerp(tab[i],tab[i+1],f-i);}
+  function resize(){
+    W=innerWidth;H=innerHeight;dpr=Math.min(devicePixelRatio||1,2);
+    canvas.width=Math.floor(W*dpr);canvas.height=Math.floor(H*dpr);ctx.setTransform(dpr,0,0,dpr,0,0);
+    h=clamp(Math.min(W,H)*.17,58,128); r=.9*h;           // rock diameter ≈ 1.8 × person height
+    Sx=24*h;Xtop=Sx+1.6*h;Xp=Xtop+1.4*h;ax=W*.46;ay=H*.68;
+    Xb=Xp+T*Sx/TB;build();Xb+=tab[tab.length-1]/TB;build();
+    topH=Hh(Xtop);
+    if(typeof st!=='undefined'){xc=clamp(xc,-500,Xb);}
+  }
+
+  // ---------- state ----------
+  let st='ready',p=0,m=0,v=0,xc=0,rotA=0,ph=0,tmr=0,vr=0,tops=0,px0=0,xf=0,hf=0,held=false,restP=0,dp=0;
+  let walkTo=0,pend=0,touchDown=false,lastUp=-1,last=performance.now(),rc={cx:0,cy:0};
+  const down=new Set(), KEYS=[' ','ArrowUp','ArrowRight','ArrowDown','ArrowLeft'];
+  resize();
+
+  function rockCenter(x){const d=dhf(x),n=Math.hypot(1,d);return{cx:x-d*r/n,cy:Hh(x)+r/n};}
+  const lean0=()=>.42+.22*p;
+  function shoulderOf(x0,lean){const hx=x0+Math.sin(lean)*.12*h;return[hx+Math.sin(lean)*.3*h,Hh(x0)+.46*h+Math.cos(lean)*.3*h];}
+  function solveX0(C,lean){
+    let lo=C.cx-9*h,hi=C.cx;const tgt=r+.3*h;
+    for(let i=0;i<24;i++){const mid=(lo+hi)/2,s=shoulderOf(mid,lean);if(Math.hypot(s[0]-C.cx,s[1]-C.cy)>tgt)lo=mid;else hi=mid;}
+    return(lo+hi)/2;
+  }
+  function syncPush(){rc=rockCenter(xc);px0=solveX0(rc,lean0());}
+  function focusTarget(){
+    if(st==='roll'||st==='settle')return rc.cx;
+    if(st==='descend')return px0;
+    return(px0+rc.cx)/2;
+  }
+  syncPush();xf=focusTarget();
+
+  // ---------- drawing helpers ----------
+  const X=x=>ax+x-xf, Y=y=>ay-(y-hf);
+  function palette(q){
+    const s=[[0,[8,34,73]],[.25,[29,49,104]],[.48,[95,57,130]],[.68,[188,79,119]],[.84,[240,139,105]],[1,[255,211,143]]];
+    let i=0;while(i<s.length-2&&q>s[i+1][0])i++;
+    const t=clamp((q-s[i][0])/(s[i+1][0]-s[i][0]),0,1);return s[i][1].map((c,j)=>Math.round(lerp(c,s[i+1][1][j],t)));
+  }
+  function drawSky(q){
+    const[R,G,B]=palette(q),g=ctx.createLinearGradient(0,0,0,H);
+    g.addColorStop(0,`rgb(${Math.min(255,R+18)},${Math.min(255,G+20)},${Math.min(255,B+30)})`);
+    g.addColorStop(.62,`rgb(${R},${G},${B})`);g.addColorStop(1,`rgb(${Math.max(0,R-5)},${Math.max(0,G-10)},${Math.max(0,B-15)})`);
+    ctx.fillStyle=g;ctx.fillRect(0,0,W,H);
+    ctx.fillStyle=`rgba(255,255,255,${.12+(1-q)*.45})`;
+    for(let i=0;i<55;i++){const s=i%5===0?1.4:.7;ctx.fillRect((i*197.3)%W,(i*83.7)%(H*.57),s,s);}
+    const sx=W*.78,sy=H*(.27-.08*q),sr=Math.min(W,H)*(.045+.02*q);
+    const ha=ctx.createRadialGradient(sx,sy,2,sx,sy,sr*3.5);
+    ha.addColorStop(0,`rgba(255,241,211,${.25+.2*q})`);ha.addColorStop(1,'rgba(255,241,211,0)');
+    ctx.fillStyle=ha;ctx.fillRect(sx-sr*4,sy-sr*4,sr*8,sr*8);
+    ctx.beginPath();ctx.arc(sx,sy,sr,0,7);ctx.fillStyle=`rgba(255,240,213,${.45+.35*q})`;ctx.fill();
+  }
+  function ridge(f,base,amp,col){
+    ctx.fillStyle=col;ctx.beginPath();ctx.moveTo(0,H);
+    for(let sx=0;sx<=W+12;sx+=12){const u=xf*f+sx;
+      const n=Math.sin(u*.0021)*.5+Math.sin(u*.0053+2)*.3+Math.sin(u*.011+1)*.2;ctx.lineTo(sx,base-n*amp);}
+    ctx.lineTo(W+12,H);ctx.closePath();ctx.fill();
+  }
+  function drawGround(){
+    const pts=[];ctx.beginPath();
+    for(let sx=-10;sx<=W+10;sx+=8){const y=Y(Hh(xf+sx-ax));pts.push([sx,y]);}
+    ctx.moveTo(-10,H+10);for(const q of pts)ctx.lineTo(q[0],q[1]);ctx.lineTo(W+10,H+10);ctx.closePath();
+    ctx.fillStyle=INK;ctx.fill();
+    ctx.beginPath();pts.forEach((q,i)=>i?ctx.lineTo(q[0],q[1]):ctx.moveTo(q[0],q[1]));
+    ctx.strokeStyle='rgba(255,226,192,.16)';ctx.lineWidth=1.2;ctx.stroke();
+    // small stones and tufts keep the sense of motion
+    const k0=Math.floor((xf-ax-60)/64),k1=Math.ceil((xf-ax+W+60)/64);ctx.fillStyle=INK;
+    for(let k=k0;k<=k1;k++){
+      const a=Math.sin(k*127.1)*43758.5,fr=a-Math.floor(a);if(fr>.7)continue;
+      const x=k*64+fr*40,sx=X(x),sy=Y(Hh(x))+2,w=8+fr*22,hh=4+fr*(k%5===0?22:9);
+      ctx.beginPath();ctx.moveTo(sx-w,sy);ctx.quadraticCurveTo(sx-w*.2,sy-hh*1.3,sx+w*.15,sy-hh);ctx.lineTo(sx+w,sy);ctx.closePath();ctx.fill();
+    }
+  }
+  const RF=[1,.97,1.03,.95,1,1.04,.96,.99,1.03,.97,1,.95,1.03,.98,1.01,.96];
+  const CR=[[-.7,-.2,-.35,.05,-.1,.45],[.1,-.75,.3,-.3,.65,-.15],[-.2,.7,.15,.4,.6,.5],[-.5,-.55,-.2,-.5,-.05,-.2]];
+  function drawRock(){
+    const cx=X(rc.cx),cy=Y(rc.cy),n=16;
+    if(cx<-r*2||cx>W+r*2)return;
+    ctx.save();ctx.translate(cx,cy);
+    const pts=RF.map((f,i)=>{const a=i/n*Math.PI*2+rotA;return[Math.cos(a)*r*f,Math.sin(a)*r*f];});
+    ctx.beginPath();ctx.moveTo((pts[n-1][0]+pts[0][0])/2,(pts[n-1][1]+pts[0][1])/2);
+    for(let i=0;i<n;i++){const b=pts[(i+1)%n];ctx.quadraticCurveTo(pts[i][0],pts[i][1],(pts[i][0]+b[0])/2,(pts[i][1]+b[1])/2);}
+    ctx.closePath();ctx.fillStyle=INK;ctx.fill();ctx.clip();
+    const g=ctx.createRadialGradient(r*.4,-r*.5,0,r*.4,-r*.5,r*1.5);
+    g.addColorStop(0,'rgba(255,214,180,.30)');g.addColorStop(1,'rgba(255,214,180,0)');
+    ctx.fillStyle=g;ctx.fillRect(-r,-r,r*2,r*2);
+    ctx.rotate(rotA);ctx.strokeStyle='rgba(200,205,230,.17)';ctx.lineWidth=1.6;ctx.lineCap='round';
+    for(const c of CR){ctx.beginPath();ctx.moveTo(c[0]*r,c[1]*r);ctx.quadraticCurveTo(c[2]*r,c[3]*r,c[4]*r,c[5]*r);ctx.stroke();}
+    ctx.restore();
+  }
+  function ik(A,B,l1,l2,hint){
+    const dx=B[0]-A[0],dy=B[1]-A[1],d=Math.hypot(dx,dy)||1e-3,dd=Math.min(d,l1+l2-.5);
+    const a=(l1*l1-l2*l2+dd*dd)/(2*dd),hh=Math.sqrt(Math.max(0,l1*l1-a*a)),ux=dx/d,uy=dy/d;
+    let qx=-uy,qy=ux;if(qx*hint[0]+qy*hint[1]<0){qx=-qx;qy=-qy;}
+    return[A[0]+ux*a+qx*hh,A[1]+uy*a+qy*hh];
+  }
+  function limb(a,b,w){ctx.lineWidth=w;ctx.beginPath();ctx.moveTo(X(a[0]),Y(a[1]));ctx.lineTo(X(b[0]),Y(b[1]));ctx.stroke();}
+  function dot(a,rad){ctx.beginPath();ctx.arc(X(a[0]),Y(a[1]),rad,0,7);ctx.fill();}
+  // Adult male silhouette (height = h). World coords, y up.
+  function person(x0,f,lean,phs,amp,mode,bob,yo=0){
+    const sn=Math.sin(phs),fxA=x0+f*(.05*h+amp*h*sn),fxB=x0+f*(-.05*h-amp*h*sn);
+    const lift=mode==='walk'?.07:.04;
+    const A=[fxA,Hh(fxA)+yo+Math.max(0,Math.cos(phs))*lift*h],B=[fxB,Hh(fxB)+yo+Math.max(0,-Math.cos(phs))*lift*h];
+    const hip=[x0+f*Math.sin(lean)*.12*h,(A[1]+B[1])/2+.46*h-bob];
+    const sh=[hip[0]+f*Math.sin(lean)*.3*h,hip[1]+Math.cos(lean)*.3*h];
+    const head=[sh[0]+f*Math.sin(lean+.2)*.14*h,sh[1]+Math.cos(lean+.2)*.14*h];
+    ctx.fillStyle=ctx.strokeStyle=INK;ctx.lineCap='round';ctx.lineJoin='round';
+    for(const ft of [B,A]){
+      const k=ik(hip,ft,.25*h,.25*h,[f,0]);
+      limb(hip,k,.1*h);limb(k,ft,.075*h);limb(ft,[ft[0]+f*.1*h,ft[1]],.05*h);
+    }
+    // torso: broad shoulders tapering to the waist
+    const ax_=sh[0]-hip[0],ay_=sh[1]-hip[1],L=Math.hypot(ax_,ay_),nx=-ay_/L,ny=ax_/L;
+    const c=(p0,w)=>[X(p0[0]+nx*w),Y(p0[1]+ny*w)],c2=(p0,w)=>[X(p0[0]-nx*w),Y(p0[1]-ny*w)];
+    ctx.beginPath();
+    let q=c(hip,.075*h);ctx.moveTo(q[0],q[1]);q=c(sh,.105*h);ctx.lineTo(q[0],q[1]);
+    q=c2(sh,.105*h);ctx.lineTo(q[0],q[1]);q=c2(hip,.075*h);ctx.lineTo(q[0],q[1]);ctx.closePath();ctx.fill();
+    dot(sh,.1*h);dot(hip,.08*h);limb(sh,head,.06*h);dot(head,.07*h);
+    // arms
+    let hands;
+    if(mode==='push'){
+      const ux=sh[0]-rc.cx,uy=sh[1]-rc.cy,d=Math.hypot(ux,uy),a0=Math.atan2(uy,ux);
+      const hd=a=>[rc.cx+Math.cos(a)*r,rc.cy+Math.sin(a)*r],h1=hd(a0),h2a=hd(a0+.3),h2b=hd(a0-.3);
+      hands=[h1,h2a[1]<h2b[1]?h2a:h2b];
+    }else if(mode==='walk'){
+      hands=[[sh[0]+f*.2*h*sn,sh[1]-.3*h],[sh[0]-f*.2*h*sn,sh[1]-.3*h]];
+    }else hands=[[sh[0]+f*.03*h,sh[1]-.31*h],[sh[0]+f*.05*h,sh[1]-.3*h]];
+    hands.forEach((hn,i)=>{
+      const e=ik(sh,hn,.17*h,.16*h,mode==='push'?[0,-1]:[-f*.3,-1]);
+      limb(sh,e,.062*h);limb(e,hn,.05*h);dot(hn,.032*h);
+    });
+  }
+
+  function draw(t){
+    hf=Hh(xf);const q=clamp(hf/topH,0,1);
+    drawSky(q);
+    ridge(.06,H*.6+hf*.1,H*.13,'rgba(10,14,40,.34)');
+    ridge(.14,H*.7+hf*.2,H*.12,'rgba(6,9,26,.6)');
+    drawGround();
+    const pushing=st==='ready'||st==='play';
+    const bob=pushing&&held&&Math.abs(v)<.012?Math.sin(t*35)*.008*h:0;
+    // dp: the man steps 'behind' the path (a little smaller, a little higher) so the rock can pass him
+    const drawP=()=>{
+      const hs=h;h=hs*(1-.12*dp);const yo=dp*.06*hs;
+      if(pushing)person(px0,1,lean0(),ph,.07,'push',bob,yo);
+      else if(st==='descend')person(px0,-1,.07,ph,.13,'walk',Math.abs(Math.sin(ph))*.012*h,yo);
+      else person(px0,1,.03,0,0,'stand',0,yo);
+      h=hs;
+    };
+    if(dp>.02){drawP();drawRock();}else{drawRock();drawP();}
+    const vg=ctx.createRadialGradient(W*.5,H*.42,H*.15,W*.5,H*.42,Math.max(W,H)*.72);
+    vg.addColorStop(.55,'rgba(0,0,0,0)');vg.addColorStop(1,'rgba(0,0,0,.28)');ctx.fillStyle=vg;ctx.fillRect(0,0,W,H);
+  }
+
+  // ---------- simulation ----------
+  function setHint(){
+    hintEl.textContent=p<.33?'Hold SPACE / ↑ to push the boulder up — let go and it rolls back down'
+      :p<.66?'It grows heavier — keep holding and start tapping':'Now you must keep tapping without rest!';
+  }
+  function update(now){
+    const dt=Math.min((now-last)/1000,.05),t=now/1000;last=now;
+    held=down.size>0||touchDown||(t-lastUp<.12);
+    if(st==='play'){
+      m=Math.min(m+pend*.06,.22);pend=0;m*=Math.exp(-4*dt);
+      const hold=held?.125*(1-.82*p):0;
+      let slide=.025+.07*p;if(!held)slide*=1.7;if(!held&&dhf(xc)<.05)slide=0;       // heavier the higher you are
+      v=hold+m-slide;if(p<=restP&&v<0)v=0;
+      const old=xc;p=clamp(p+v*dt,restP,1);xc=p*Xtop;
+      rotA+=(xc-old)*Math.hypot(1,dhf(xc))/r;
+      ph+=(xc-old)/(.9*h)*Math.PI*2;if(held&&Math.abs(v)<.012)ph+=dt*4;
+      setHint();syncPush();
+      if(p>=1){st='top';tmr=0;tops++;countEl.textContent=tops;msgEl.textContent='The summit. And then, down again.';}
+    }else if(st==='top'){tmr+=dt;pend=0;if(tmr>1.4){st='roll';vr=-140;}}
+    else if(st==='roll'){
+      const d=dhf(xc);let a=-1700*h/120*d/(1+d*d)-vr*.35;if(xc<0)a-=vr*3.5;
+      vr+=a*dt;const old=xc;xc+=vr*dt;rotA+=(xc-old)*Math.hypot(1,d)/r;rc=rockCenter(xc);
+      if(xc<0&&Math.abs(vr)<22){st='settle';tmr=0;restP=xc/Xtop;}
+    }else if(st==='settle'){
+      tmr+=dt;pend=0;
+      if(tmr>.8){st='descend';tmr=0;walkTo=solveX0(rc,.42);m=0;msgEl.textContent='The boulder is below. Go down.';hintEl.textContent='Hold to walk down — tap repeatedly to go faster';}
+    }else if(st==='descend'){
+      m=Math.min(m+pend*.06,.22);pend=0;m*=Math.exp(-4*dt);
+      const sp=(held?3*h:0)+m*20*h;px0-=sp*dt;ph+=sp*dt/(1.4*h)*Math.PI*2;
+      if(px0<=walkTo){st='play';p=restP;m=0;v=0;xc=restP*Xtop;ph=0;syncPush();msgEl.textContent='O my soul, do not aspire to immortal life, but exhaust the limits of the possible.';setHint();}
+    }
+    const dpT=(st==='top'||st==='roll'||st==='settle')?1:clamp((1.05*r-Math.abs(px0-rc.cx))/(.25*r),0,1);
+    dp+=(dpT-dp)*(1-Math.exp(-dt*5));
+    if(st==='ready'){syncPush();}
+    fillEl.style.width=(clamp(p,0,1)*100)+'%';
+    const k=st==='roll'?5:st==='descend'||st==='settle'?6:9;
+    xf+=(focusTarget()-xf)*(1-Math.exp(-dt*k));
+    draw(t);requestAnimationFrame(update);
+  }
+
+  // ---------- input ----------
+  function begin(){if(st!=='ready')return;st='play';startBtn.classList.add('hidden');msgEl.textContent='Push it up.';}
+  startBtn.addEventListener('click',begin);
+  addEventListener('keydown',e=>{
+    if(!KEYS.includes(e.key))return;e.preventDefault();begin();
+    if(!e.repeat&&!down.has(e.key))pend++;down.add(e.key);
+  });
+  addEventListener('keyup',e=>{if(down.delete(e.key))lastUp=performance.now()/1000;});
+  addEventListener('blur',()=>{down.clear();touchDown=false;});
+  touchBtn.addEventListener('pointerdown',e=>{e.preventDefault();begin();pend++;touchDown=true;});
+  for(const ev of['pointerup','pointercancel','pointerleave'])touchBtn.addEventListener(ev,()=>{if(touchDown){touchDown=false;lastUp=performance.now()/1000;}});
+  addEventListener('resize',()=>{resize();if(st==='play'||st==='ready'){xc=p*Xtop;syncPush();}});
+  requestAnimationFrame(update);
+})();
+</script>
+</body>
+</html>
